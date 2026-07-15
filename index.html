@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>График отпусков: пересечения по отделам</title>
+  <!-- Библиотека XLSX нужна ТОЛЬКО для загрузки Excel-файла -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; padding: 1rem; color: #333; background: #f5f7fa; }
+    h1 { margin-top: 0; }
+    .controls { margin-bottom: 1.5rem; display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center; }
+    select, button, input[type="file"] { padding: 0.5rem 0.75rem; border-radius: 6px; border: 1px solid #ccc; cursor: pointer; }
+    button { background: #2c3e50; color: white; border: none; cursor: pointer; }
+    button:hover { background: #34495e; }
+    button.green { background: #27ae60; }
+
+    .year-view-wrapper { overflow-x: auto; }
+    table { border-collapse: collapse; width: 100%; background: white; box-shadow: 0 1px 3px rgba(0,0,0,0.1); min-width: 1200px; }
+    th, td { border: 1px solid #ddd; padding: 0.3rem 0.4rem; text-align: center; min-width: 24px; position: relative; font-size: 13px; }
+    th { background: #ecf0f1; white-space: nowrap; }
+
+    /* Цвета для чисел в шапке (дни месяца) */
+    .weekend-day-label { color: #856404; background-color: #fff3cd !important; }
+    .holiday-day-label { color: #721c24; background-color: #fdf7f7 !important; }
+
+    /* Отпуск у сотрудника: зелёный блок внутри ячейки */
+    .vacation-cell {
+      background: #2ecc71;
+      color: white;
+      border-radius: 4px;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 600;
+      font-size: 14px;
+    }
+
+    /* Пересечение: красное свечение поверх ячейки с отпуском */
+    .conflict { box-shadow: 0 0 8px rgba(231, 76, 60, 0.8) !important; border-color: #e74c3c !important; }
+
+    .month-label { font-weight: bold; color: #2c3e50; margin-bottom: 0.5rem; margin-top: 1rem; }
+    .legend { display: flex; gap: 1rem; margin-bottom: 1rem; flex-wrap: wrap; }
+    .badge { display: inline-block; height: 16px; width: 16px; vertical-align: middle; margin-right: 0.3rem; }
+    .note { font-size: 0.85rem; color: #666; margin-top: 1rem; }
+  </style>
+</head>
+<body>
+  <h1>График отпусков (пересечения по отделам)</h1>
+
+  <div class="controls">
+    <label>Отдел:
+      <select id="deptFilter" onchange="render()">
+        <option value="all">Все отделы</option>
+      </select>
+    </label>
+    <input type="file" id="xlsxUpload" accept=".xlsx,.xls" title="Загрузить график отпусков из Excel"/>
+    <button onclick="handleFileUpload()" class="green">Загрузить график отпусков</button>
+    <!-- Кнопки выгрузки НЕТ — её функционал удалён -->
+  </div>
+
+  <div class="legend">
+    <span><span class="badge" style="background:#fff3cd; border:1px solid #ccc"></span>Выходной (сб/вс) — помечен в шапке</span>
+    <span><span class="badge" style="background:#fdf7f7; border:1px solid #ccc"></span>Праздник — помечен в шапке</span>
+    <span><span class="badge" style="background:#2ecc71"></span>Отпуск сотрудника (зелёный блок)</span>
+    <span><span class="badge" style="box-shadow:0 0 6px rgba(231,76,60,0.8)"></span>Пересечение (2+ в одном отделе)</span>
+  </div>
+
+  <div class="year-view-wrapper">
+    <!-- Сюда JS будет вставлять 12 таблиц -->
+  </div>
+
+  <p class="note">В шапке: выходные — бледно‑жёлтый фон, праздники — бледно‑красный. В строках сотрудников рисуется только отпуск. Пересечения подсвечиваются красным свечением только если в отпуске 2+ сотрудника одного отдела. Выгрузка в Excel отключена.</p>
+
+<script>
+  let rawData = [];
+  let data = [];
+
+  // Праздники: формат YYYY-MM-DD
+  const holidays = new Set([
+    "2026-01-01", "2026-01-02", "2026-01-03", "2026-01-04", "2026-01-05", "2026-01-06", "2026-01-07", "2026-01-08",
+    "2026-02-23", "2026-03-08", "2026-05-01", "2026-05-09", "2026-06-12", "2026-11-04"
+  ]);
+
+  const monthNames = ['Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
+
+  function getDaysInMonth(year, month) {
+    return new Date(year, month + 1, 0).getDate();
+  }
+
+  function parseDateDMY(dateVal) {
+    if (!dateVal) return null;
+    if (dateVal instanceof Date) return dateVal;
+    // Обработка дат из Excel (числовой формат)
+    if (typeof dateVal === 'number') {
+      const excelEpoch = new Date(1899, 11, 30);
+      const offsetInMs = dateVal * 24 * 60 * 60 * 1000;
+      return new Date(excelEpoch.getTime() + offsetInMs);
+    }
+    const dateStr = String(dateVal).trim();
+    if (!dateStr) return null;
+
+    const isoMatch = dateStr.match(/^\d{4}-\d{2}-\d{2}/);
+    if (isoMatch) return new Date(dateStr);
+
+    const dmyMatch = dateStr.match(/^(\d{1,2})[\.\/](\d{1,2})[\.\/](\d{4})/);
+    if (dmyMatch) {
+      const day = parseInt(dmyMatch[1], 10);
+      const month = parseInt(dmyMatch[2], 10) - 1;
+      const year = parseInt(dmyMatch[3], 10);
+      return new Date(year, month, day);
+    }
+
+    return null;
+  }
+
+  function isHoliday(date) {
+    const y = date.getFullYear().toString().padStart(4, '0');
+    const m = (date.getMonth() + 1).toString().padStart(2, '0');
+    const d = date.getDate().toString().padStart(2, '0');
+    return holidays.has(`${y}-${m}-${d}`);
+  }
+
+  function handleFileUpload() {
+    const file = document.getElementById('xlsxUpload').files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = function(e) {
+      try {
+        const dataArr = new Uint8Array(e.target.result);
+        const workbook = XLSX.read(dataArr, {type: 'array'});
+        const firstSheetName = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[firstSheetName];
+        const json = XLSX.utils.sheet_to_json(worksheet);
+
+        rawData = json.map(row => {
+          const startRaw = row['Start'] || row['Начало'] || '';
+          const endRaw = row['End'] || row['Конец'] || '';
+          return {
+            name: row['Name'] || row['Имя'] || 'Неизвестно',
+            dept: row['Department'] || row['Отдел'] || 'Без отдела',
+            type: row['Type'] || row['Тип'] || 'vacation',
+            start: parseDateDMY(startRaw),
+            end: parseDateDMY(endRaw)
+          };
+        }).filter(item => item.start !== null && item.end !== null);
+
+        data = [];
+        const grouped = {};
+        rawData.forEach(r => {
+          if (r.type !== 'vacation' && r.type !== 'отпуск') return;
+          const key = r.name + '|' + r.dept;
+          if (!grouped[key]) {
+            grouped[key] = { name: r.name, dept: r.dept, periods: [] };
+          }
+          grouped[key].periods.push({ type: 'vacation', start: r.start, end: r.end });
+        });
+
+        for (const k in grouped) {
+          data.push(grouped[k]);
+        }
+
+        populateDeptFilter();
+        render();
+      } catch (err) {
+        alert('Ошибка при чтении файла Excel. Проверьте формат файла и названия колонок (Start/Начало, End/Конец, Name/Имя, Department/Отдел).');
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  }
+
+  function populateDeptFilter() {
+    const deptSelect = document.getElementById('deptFilter');
+    deptSelect.innerHTML = '<option value="all">Все отделы</option>';
+    const depts = [...new Set(data.map(x => x.dept))].sort();
+    depts.forEach(d => {
+      const opt = document.createElement('option');
+      opt.value = d;
+      opt.innerText = d;
+      deptSelect.appendChild(opt);
+    });
+  }
+
+  function render() {
+    const deptFilter = document.getElementById('deptFilter').value;
+    const filtered = deptFilter === 'all' ? data : data.filter(x => x.dept === deptFilter);
+    renderYearView(filtered);
+  }
+
+  function isDayInAnyPeriod(date, periods) {
+    for (const p of periods) {
+      if (date >= p.start && date <= p.end) {
+        return p.type;
+      }
+    }
+    return null;
+  }
+
+  function renderYearView(rows) {
+    const wrapper = document.querySelector('.year-view-wrapper');
+    wrapper.innerHTML = '';
+
+    const currentYear = new Date().getFullYear();
+
+    for (let m = 0; m < 12; m++) {
+      const daysInMonth = getDaysInMonth(currentYear, m);
+      const monthName = monthNames[m];
+
+      let html = `<div><div class="month-label">${monthName} ${currentYear}</div><table>`;
+      html += `<thead><tr><th style="width:180px">Сотрудник / Отдел</th>`;
+
+      // Шапка: числа месяца с раскраской по выходным/праздникам
+      for (let d = 1; d <= daysInMonth; d++) {
+        const date = new Date(currentYear, m, d);
+        let classes = '';
+        if (isHoliday(date)) {
+          classes = 'holiday-day-label';
+        } else if (date.getDay() === 0 || date.getDay() === 6) {
+          classes = 'weekend-day-label';
+        }
+        html += `<th class="${classes}">${d}</th>`;
+      }
+      html += `</tr></thead><tbody>`;
+
+      rows.forEach(row => {
+        html += `<tr><td><strong>${row.name}</strong><br><small>${row.dept}</small></td>`;
+        for (let d = 1; d <= daysInMonth; d++) {
+          const date = new Date(currentYear, m, d);
+          const type = isDayInAnyPeriod(date, row.periods);
+
+          let cellContent = '';
+          if (type) {
+            cellContent = '<div class="vacation-cell">О</div>';
+          }
+
+          html += `<td data-dept="${row.dept}" data-has-vacation="${type ? '1' : '0'}">${cellContent}</td>`;
+        }
+        html += `</tr>`;
+      });
+      html += `</tbody></table></div><br/>`;
+      wrapper.innerHTML += html;
+    }
+
+    // Подсветка пересечений строго по отделам
+    const tables = wrapper.querySelectorAll('table');
+    tables.forEach(tbl => highlightConflictsForTable(tbl));
+  }
+
+  function highlightConflictsForTable(table) {
+    const cells = Array.from(table.querySelectorAll('td'));
+    cells.forEach(cell => {
+      const colIndex = cell.cellIndex;
+      if (colIndex <= 1) return;
+
+      const columnCells = Array.from(table.querySelectorAll(`td:nth-child(${colIndex})`));
+      
+      // Группируем по отделам и считаем, сколько человек в отпуске в этом дне в каждом отделе
+      const deptCount = {};
+      columnCells.forEach(c => {
+        const dept = c.getAttribute('data-dept');
+        const hasVacation = c.getAttribute('data-has-vacation') === '1';
+        if (hasVacation) {
+          deptCount[dept] = (deptCount[dept] || 0) + 1;
+        }
+      });
+
+      // Если в каком-то отделе 2+ в отпуске — подсвечиваем эти ячейки
+      columnCells.forEach(c => {
+        const dept = c.getAttribute('data-dept');
+        const hasVacation = c.getAttribute('data-has-vacation') === '1';
+        
+        if (hasVacation && deptCount[dept] >= 2) {
+          c.classList.add('conflict');
+        } else {
+          c.classList.remove('conflict');
+        }
+      });
+    });
+  }
+</script>
+</body>
+</html>
