@@ -14,7 +14,6 @@
     button { background: #2c3e50; color: white; border: none; cursor: pointer; }
     button:hover { background: #34495e; }
     button.green { background: #27ae60; }
-    button.blue { background: #3498db; }
 
     .year-view-wrapper { overflow-x: auto; }
     table { border-collapse: collapse; width: 100%; background: white; box-shadow: 0 1px 3px rgba(0,0,0,0.1); min-width: 1200px; }
@@ -57,8 +56,8 @@
       </select>
     </label>
     <input type="file" id="xlsxUpload" accept=".xlsx,.xls" title="Загрузить график отпусков из Excel"/>
-    <button onclick="handleFileUpload()" class="green">Загрузить из Excel</button>
-    <button id="btnLoadCSV" class="blue" disabled>Загрузка данных из CSV...</button>
+    <button onclick="handleFileUpload()" class="green">Загрузить график отпусков</button>
+    <!-- Кнопки выгрузки НЕТ — её функционал удалён -->
   </div>
 
   <div class="legend">
@@ -72,15 +71,9 @@
     <!-- Сюда JS будет вставлять 12 таблиц -->
   </div>
 
-  <p class="note">При открытии страницы автоматически загружается data.csv из GitHub. Также можно загрузить Excel вручную. В шапке: выходные — бледно‑жёлтый фон, праздники — бледно‑красный. В строках сотрудников рисуется только отпуск. Пересечения подсвечиваются красным свечением только если в отпуске 2+ сотрудника одного отдела.</p>
+  <p class="note">В шапке: выходные — бледно‑жёлтый фон, праздники — бледно‑красный. В строках сотрудников рисуется только отпуск. Пересечения подсвечиваются красным свечением только если в отпуске 2+ сотрудника одного отдела. Выгрузка в Excel отключена.</p>
 
 <script>
-  // ================= НАСТРОЙКА =================
-  // ВСТАВЬ СЮДА RAW-ССЫЛКУ НА ФАЙЛ data.csv ИЗ GITHUB
-  // Пример: https://raw.githubusercontent.com/username/repo/main/data.csv
-  const CSV_URL = 'https://raw.githubusercontent.com/KotuneN/DRP-calendar/refs/heads/main/data.csv';
-  // ===========================================
-
   let rawData = [];
   let data = [];
 
@@ -127,77 +120,6 @@
     const m = (date.getMonth() + 1).toString().padStart(2, '0');
     const d = date.getDate().toString().padStart(2, '0');
     return holidays.has(`${y}-${m}-${d}`);
-  }
-
-  async function loadDataFromCSV() {
-    const btn = document.getElementById('btnLoadCSV');
-    btn.textContent = 'Загрузка данных...';
-    btn.disabled = true;
-
-    try {
-      const res = await fetch(CSV_URL);
-      if (!res.ok) {
-        throw new Error(`Ошибка HTTP ${res.status}: не удалось загрузить CSV`);
-      }
-      const text = await res.text();
-      const lines = text.split('\n').filter(l => l.trim() !== '');
-      if (lines.length === 0) {
-        throw new Error('CSV файл пуст');
-      }
-
-      const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
-      const colEmp = headers.findIndex(h => h.includes('сотрудник') || h.includes('name'));
-      const colDept = headers.findIndex(h => h.includes('отдел') || h.includes('department'));
-      const colStart = headers.findIndex(h => h.includes('начало') || h.includes('start'));
-      const colEnd = headers.findIndex(h => h.includes('конец') || h.includes('end'));
-
-      if (colEmp === -1 || colDept === -1 || colStart === -1 || colEnd === -1) {
-        throw new Error('В CSV не найдены обязательные колонки: Сотрудник/Name, Отдел/Department, Начало/Start, Конец/End');
-      }
-
-      rawData = [];
-      for (let i = 1; i < lines.length; i++) {
-        const cols = lines[i].split(',');
-        const emp = cols[colEmp]?.trim();
-        const dept = cols[colDept]?.trim();
-        const startRaw = cols[colStart];
-        const endRaw = cols[colEnd];
-
-        if (!emp || !dept || !startRaw || !endRaw) continue;
-
-        const start = parseDateDMY(startRaw);
-        const end = parseDateDMY(endRaw);
-
-        if (start && end) {
-          rawData.push({ employee: emp, department: dept, start, end, type: 'vacation' });
-        }
-      }
-
-      data = [];
-      const grouped = {};
-      rawData.forEach(r => {
-        if (r.type !== 'vacation') return;
-        const key = r.employee + '|' + r.department;
-        if (!grouped[key]) {
-          grouped[key] = { name: r.employee, dept: r.department, periods: [] };
-        }
-        grouped[key].periods.push({ type: 'vacation', start: r.start, end: r.end });
-      });
-
-      for (const k in grouped) {
-        data.push(grouped[k]);
-      }
-
-      populateDeptFilter();
-      render();
-      btn.textContent = 'Данные загружены из CSV';
-      btn.style.background = '#27ae60';
-    } catch (err) {
-      console.error(err);
-      alert('Не удалось загрузить CSV: ' + err.message + '. Проверьте URL и наличие файла в репозитории.');
-      btn.textContent = 'Ошибка загрузки CSV';
-      btn.style.background = '#e74c3c';
-    }
   }
 
   function handleFileUpload() {
@@ -300,62 +222,63 @@
         }
         html += `<th class="${classes}">${d}</th>`;
       }
-            html += `</tr></thead><tbody>`;
-
-      // Для поиска конфликтов: считаем, сколько человек в отпуске в каждый день по отделу
-      const conflictsByDate = {}; // ключ: YYYY-MM-DD, значение: количество сотрудников в отпуске в этом отделе
+      html += `</tr></thead><tbody>`;
 
       rows.forEach(row => {
+        html += `<tr><td><strong>${row.name}</strong><br><small>${row.dept}</small></td>`;
         for (let d = 1; d <= daysInMonth; d++) {
           const date = new Date(currentYear, m, d);
-          for (const period of row.periods) {
-            if (date >= period.start && date <= period.end) {
-              const key = `${currentYear}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-              conflictsByDate[key] = (conflictsByDate[key] || 0) + 1;
-            }
-          }
-        }
-      });
+          const type = isDayInAnyPeriod(date, row.periods);
 
-      // Отрисовка строк сотрудников
-      rows.forEach(row => {
-        html += `<tr><td style="text-align:left; padding-left:0.5rem; font-weight:500;">${row.name}<br><small style="color:#666">${row.dept}</small></td>`;
-        for (let d = 1; d <= daysInMonth; d++) {
-          const date = new Date(currentYear, m, d);
-          let cellClasses = '';
-          let hasVacation = false;
-
-          // Проверяем, есть ли у сотрудника отпуск в этот день
-          for (const period of row.periods) {
-            if (date >= period.start && date <= period.end) {
-              hasVacation = true;
-              break;
-            }
+          let cellContent = '';
+          if (type) {
+            cellContent = '<div class="vacation-cell">О</div>';
           }
 
-          if (hasVacation) {
-            cellClasses += ' vacation-cell';
-            // Если в этот день в отпуске 2+ сотрудника этого отдела — добавляем класс конфликта
-            const key = `${currentYear}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-            if ((conflictsByDate[key] || 0) >= 2) {
-              cellClasses += ' conflict';
-            }
-          }
-
-          html += `<td class="${cellClasses.trim()}"></td>`;
+          html += `<td data-dept="${row.dept}" data-has-vacation="${type ? '1' : '0'}">${cellContent}</td>`;
         }
         html += `</tr>`;
       });
-
-      html += `</tbody></table></div>`;
+      html += `</tbody></table></div><br/>`;
       wrapper.innerHTML += html;
     }
+
+    // Подсветка пересечений строго по отделам
+    const tables = wrapper.querySelectorAll('table');
+    tables.forEach(tbl => highlightConflictsForTable(tbl));
   }
 
-  // Запуск автозагрузки CSV при открытии страницы
-  document.addEventListener('DOMContentLoaded', () => {
-    loadDataFromCSV();
-  });
+  function highlightConflictsForTable(table) {
+    const cells = Array.from(table.querySelectorAll('td'));
+    cells.forEach(cell => {
+      const colIndex = cell.cellIndex;
+      if (colIndex <= 1) return;
+
+      const columnCells = Array.from(table.querySelectorAll(`td:nth-child(${colIndex})`));
+      
+      // Группируем по отделам и считаем, сколько человек в отпуске в этом дне в каждом отделе
+      const deptCount = {};
+      columnCells.forEach(c => {
+        const dept = c.getAttribute('data-dept');
+        const hasVacation = c.getAttribute('data-has-vacation') === '1';
+        if (hasVacation) {
+          deptCount[dept] = (deptCount[dept] || 0) + 1;
+        }
+      });
+
+      // Если в каком-то отделе 2+ в отпуске — подсвечиваем эти ячейки
+      columnCells.forEach(c => {
+        const dept = c.getAttribute('data-dept');
+        const hasVacation = c.getAttribute('data-has-vacation') === '1';
+        
+        if (hasVacation && deptCount[dept] >= 2) {
+          c.classList.add('conflict');
+        } else {
+          c.classList.remove('conflict');
+        }
+      });
+    });
+  }
 </script>
 </body>
 </html>
