@@ -76,7 +76,33 @@
 <script>
   let rawData = [];
   let data = [];
+async function loadCSV() {
+  const res = await fetch('data.csv');
+  if (!res.ok) throw new Error('CSV не загружен');
+  const text = await res.text();
+  const lines = text.split('\n').filter(l => l.trim() !== '');
+  const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
 
+  const colEmp = headers.findIndex(h => h.includes('сотрудник') || h.includes('name'));
+  const colDept = headers.findIndex(h => h.includes('отдел') || h.includes('department'));
+  const colRange = headers.findIndex(h => h.includes('диапазон') || h.includes('date'));
+
+  rawData = [];
+  for (let i = 1; i < lines.length; i++) {
+    const cols = lines[i].split(',');
+    const emp = cols[colEmp]?.trim();
+    const dept = cols[colDept]?.trim();
+    const rangeRaw = cols[colRange];
+    if (!emp || !dept || !rangeRaw) continue;
+
+    const dates = extractTwoDates(rangeRaw);
+    if (dates) {
+      rawData.push({ employee: emp, department: dept, start: dates.start, end: dates.end });
+    }
+  }
+  populateDeptFilter();
+  render();
+}
   // Праздники: формат YYYY-MM-DD
   const holidays = new Set([
     "2026-01-01", "2026-01-02", "2026-01-03", "2026-01-04", "2026-01-05", "2026-01-06", "2026-01-07", "2026-01-08",
